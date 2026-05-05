@@ -1,4 +1,4 @@
-# app.py - VERSIÓN CORREGIDA CON SPARQL QUE FUNCIONA
+# app.py - BUSCADOR COMPLETO (UE, ESPAÑA, CANARIAS)
 import streamlit as st
 import pandas as pd
 import requests
@@ -6,229 +6,368 @@ import time
 import re
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
+import json
 
-# Configuración - DEBE SER LO PRIMERO
+# Configuración
 st.set_page_config(page_title="Buscador Legislativo Ambiental", page_icon="🌍", layout="wide")
 
 st.title("🔍 Buscador de Legislación Ambiental")
-st.markdown("**Búsqueda en tiempo real: EUR-Lex (SPARQL) | BOE | BOC**")
+st.markdown("**Unión Europea | España | Canarias**")
+st.markdown("*Agua | Suelo | Aire | Ruido | Residuos | Radiactividad | Emisiones*")
 
-# Palabras clave
+# ============================================
+# PALABRAS CLAVE COMPLETAS (español)
+# ============================================
 CATEGORIAS = {
-    "Agua": ["agua", "water", "hidrológico", "vertido"],
-    "Residuos": ["residuo", "waste", "reciclaje", "recycling"],
-    "Aire": ["aire", "air", "emisión", "emissions"],
-    "Suelo": ["suelo", "soil", "contaminación"],
-    "Ruido": ["ruido", "noise"],
-    "Radiactividad": ["radiactivo", "nuclear", "radioactive"]
+    "Agua": ["agua", "hidrológico", "vertido", "depuración", "acuífero", "desalación", "trasvase", "embalse", "cuenca", "regadío"],
+    "Residuos": ["residuo", "basura", "reciclaje", "vertedero", "economía circular", "envases", "plástico", "orgánico", "peligroso"],
+    "Aire": ["aire", "atmósfera", "emisión", "calidad del aire", "ozono", "partículas", "CO2", "contaminación atmosférica"],
+    "Suelo": ["suelo", "contaminación del suelo", "restauración", "sedimento", "erosión", "deslizamiento"],
+    "Ruido": ["ruido", "acústica", "vibración", "sonométrico", "decibelios"],
+    "Radiactividad": ["radiactivo", "nuclear", "radiación", "Euratom", "central nuclear", "residuo radiactivo"]
 }
 
-# CONSULTA SPARQL CORREGIDA (probada y funcionando)
-def buscar_eurlex_sparql(keyword, fecha_inicio, fecha_fin):
-    """
-    Consulta SPARQL corregida para EUR-Lex
-    Endpoint oficial: https://publications.europa.eu/webapi/rdf/sparql
-    """
-    resultados = []
-    endpoint = "https://publications.europa.eu/webapi/rdf/sparql"
-    
-    # Término en inglés para la búsqueda
-    term_en = keyword.lower()
-    term_map = {"agua": "water", "residuos": "waste", "aire": "air", "suelo": "soil", "ruido": "noise"}
-    if term_en in term_map:
-        term_en = term_map[term_en]
-    
-    fecha_inicio_str = fecha_inicio.strftime("%Y-%m-%d")
-    fecha_fin_str = fecha_fin.strftime("%Y-%m-%d")
-    
-    # CONSULTA SPARQL CORREGIDA - SIN errores de sintaxis
-    query = f"""
-    PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
-    PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
-    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-    PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
-    PREFIX dc: <http://purl.org/dc/elements/1.1/>
-    PREFIX dct: <http://purl.org/dc/terms/>
-    
-    SELECT DISTINCT ?title ?celex ?date_document ?work_uri
-    WHERE {{
-        ?work a cdm:work.
-        ?work cdm:work_id_document ?doc_id.
-        ?work dc:title ?title.
-        OPTIONAL {{ ?work cdm:work_date_document ?date_document. }}
-        OPTIONAL {{ ?work cdm:work_celex ?celex. }}
-        
-        FILTER( lang(?title) = "es" || lang(?title) = "en" )
-        FILTER( CONTAINS(LCASE(?title), "{term_en}") )
-        FILTER( ?date_document >= "{fecha_inicio_str}"^^xsd:date && ?date_document <= "{fecha_fin_str}"^^xsd:date )
-        BIND(?work AS ?work_uri)
-    }}
-    ORDER BY DESC(?date_document)
-    LIMIT 30
-    """
-    
-    headers = {
-        "Accept": "application/sparql-results+json",
-        "User-Agent": "Mozilla/5.0 (compatible; BuscadorAmbiental/1.0)"
-    }
-    
-    try:
-        st.write("📡 Conectando con EUR-Lex...")
-        response = requests.post(
-            endpoint,
-            data={"query": query},
-            headers=headers,
-            timeout=25
-        )
-        
-        st.write(f"📡 Respuesta HTTP: {response.status_code}")
-        
-        if response.status_code == 200:
-            data = response.json()
-            bindings = data.get("results", {}).get("bindings", [])
-            st.write(f"📡 Encontrados: {len(bindings)} resultados")
-            
-            for binding in bindings:
-                titulo = binding.get("title", {}).get("value", "Sin título")[:200]
-                celex = binding.get("celex", {}).get("value", "")
-                fecha = binding.get("date_document", {}).get("value", "")[:10]
-                
-                if celex:
-                    url = f"https://eur-lex.europa.eu/legal-content/ES/TXT/?uri=CELEX:{celex}"
-                else:
-                    url = binding.get("work_uri", {}).get("value", "")
-                
-                resultados.append({
-                    "Título": titulo,
-                    "Nivel": "🇪🇺 Unión Europea",
-                    "Fecha": fecha if fecha else "Fecha no disponible",
-                    "Estado": "✅ Consultar vigencia en enlace",
-                    "Enlace": url,
-                    "CELEX": celex
-                })
-        elif response.status_code == 400:
-            st.error("❌ Error 400: La consulta SPARQL fue rechazada. El servidor de la UE puede estar sobrecargado.")
-            st.code(query[:500], language="sparql")
-        else:
-            st.warning(f"⚠️ EUR-Lex respondió con código {response.status_code}")
-            
-    except requests.exceptions.Timeout:
-        st.warning("⏰ EUR-Lex: Tiempo de espera agotado (25s)")
-    except Exception as e:
-        st.warning(f"⚠️ EUR-Lex: {str(e)[:150]}")
-    
-    return resultados
-
-# Función BOE (simplificada, funciona bien)
-def buscar_boe(palabra, fecha_inicio, fecha_fin):
+# ============================================
+# FUNCIÓN 1: BUSCADOR DEL BOE (API REAL)
+# ============================================
+def buscar_boe(palabra, fecha_inicio, fecha_fin, max_resultados=20):
+    """Busca en el Boletín Oficial del Estado (API oficial)"""
     resultados = []
     url = "https://www.boe.es/buscar/api.php"
     
+    fecha_inicio_str = fecha_inicio.strftime("%Y%m%d")
+    fecha_fin_str = fecha_fin.strftime("%Y%m%d")
+    
     params = {
         'q': palabra,
-        'fecha_desde': fecha_inicio.strftime("%Y%m%d"),
-        'fecha_hasta': fecha_fin.strftime("%Y%m%d"),
+        'fecha_desde': fecha_inicio_str,
+        'fecha_hasta': fecha_fin_str,
         'coleccion': 'boe',
-        'pageSize': 15
+        'page': 1,
+        'pageSize': max_resultados
     }
     
     try:
-        response = requests.get(url, params=params, timeout=10)
+        response = requests.get(url, params=params, timeout=15)
         if response.status_code == 200:
             data = response.json()
+            
             for item in data.get('resultados', []):
                 titulo = item.get('titulo', 'Sin título')
+                fecha = item.get('fecha', '')
+                url_pdf = item.get('url_pdf', '')
+                texto = item.get('texto', '')[:500]
+                
+                # Detectar si está derogada
                 estado = "✅ Vigente"
-                if re.search(r'derogad[ao]|sin vigencia', titulo.lower()):
+                if re.search(r'derogad[ao]|sin vigencia|dejado sin efecto', titulo.lower() + " " + texto.lower()):
                     estado = "❌ DEROGADA"
+                elif re.search(r'modificad[ao]|texto refundido|versión consolidada', titulo.lower()):
+                    estado = "📝 Modificada/Refundida"
                 
                 resultados.append({
                     "Título": titulo[:200],
-                    "Nivel": "🇪🇸 España (BOE)",
-                    "Fecha": item.get('fecha', ''),
+                    "Fuente": "BOE",
+                    "Fecha": fecha,
                     "Estado": estado,
-                    "Enlace": f"https://www.boe.es{item.get('url_pdf', '')}",
-                    "CELEX": ""
+                    "Enlace": f"https://www.boe.es{url_pdf}" if url_pdf else "",
+                    "Tipo": "Disposición legal"
                 })
     except Exception as e:
-        st.warning(f"⚠️ BOE: {str(e)[:50]}")
+        st.warning(f"⚠️ BOE: {str(e)[:80]}")
     
     return resultados
 
-# Interfaz simplificada
-st.sidebar.header("🔍 Configuración")
-
-categoria = st.sidebar.selectbox("Categoría ambiental", list(CATEGORIAS.keys()))
-
-if categoria:
-    keyword = st.sidebar.selectbox("Palabra clave", CATEGORIAS[categoria])
-
-st.sidebar.markdown("### 🌍 Niveles")
-buscar_ue = st.sidebar.checkbox("🇪🇺 Unión Europea", True)
-buscar_es = st.sidebar.checkbox("🇪🇸 España (BOE)", True)
-
-st.sidebar.markdown("### 📅 Rango temporal")
-fecha_desde = st.sidebar.date_input("Desde", datetime(1990, 1, 1))
-fecha_hasta = st.sidebar.date_input("Hasta", datetime.now())
-
-buscar = st.sidebar.button("🔍 BUSCAR", type="primary")
-
-# Estado de la sesión para evitar búsquedas automáticas
-if 'busqueda_realizada' not in st.session_state:
-    st.session_state.busqueda_realizada = False
-
-if buscar:
-    st.session_state.busqueda_realizada = True
-
-if st.session_state.busqueda_realizada and buscar:
-    st.header(f"📋 Resultados para: '{keyword}'")
-    
+# ============================================
+# FUNCIÓN 2: BUSCADOR DEL BOC (SCRAPING XML)
+# ============================================
+def buscar_boc(palabra, fecha_inicio, fecha_fin):
+    """Busca en el Boletín Oficial de Canarias (scraping de sumarios)"""
     resultados = []
     
-    # Barra de progreso manual
-    progress_text = st.empty()
+    # Determinar años a buscar
+    año_inicio = fecha_inicio.year
+    año_fin = fecha_fin.year
+    
+    for año in range(año_inicio, año_fin + 1):
+        for mes in range(1, 13):
+            # Construir URL del sumario mensual
+            url_sumario = f"https://www.gobiernodecanarias.org/boc/sumarios/{año}/{str(mes).zfill(2)}/"
+            
+            try:
+                response = requests.get(url_sumario, timeout=8)
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.content, 'html.parser')
+                    texto_completo = soup.get_text().lower()
+                    
+                    # Verificar si aparece la palabra clave
+                    if palabra.lower() in texto_completo:
+                        # Intentar extraer los títulos de los anuncios
+                        titulos = soup.find_all('h3')
+                        for titulo in titulos[:5]:  # Limitar a 5 por mes
+                            titulo_texto = titulo.get_text().strip()
+                            if palabra.lower() in titulo_texto.lower():
+                                resultados.append({
+                                    "Título": titulo_texto[:150],
+                                    "Fuente": "BOC",
+                                    "Fecha": f"{año}-{str(mes).zfill(2)}-01",
+                                    "Estado": "✅ Consultar vigencia",
+                                    "Enlace": url_sumario,
+                                    "Tipo": "Disposición autonómica"
+                                })
+                        
+                        # Si no se encontraron títulos específicos, añadir entrada genérica
+                        if not any(palabra.lower() in r["Título"].lower() for r in resultados if r["Fuente"] == "BOC" and r["Fecha"].startswith(f"{año}-{str(mes).zfill(2)}")):
+                            resultados.append({
+                                "Título": f"Contenido relacionado con '{palabra}' en el BOC ({año}/{mes})",
+                                "Fuente": "BOC",
+                                "Fecha": f"{año}-{str(mes).zfill(2)}-01",
+                                "Estado": "✅ Pendiente revisión",
+                                "Enlace": url_sumario,
+                                "Tipo": "Anuncio oficial"
+                            })
+                
+                time.sleep(0.3)  # Cortesía con el servidor
+                
+            except Exception as e:
+                continue
+    
+    return resultados
+
+# ============================================
+# FUNCIÓN 3: BUSCADOR EUR-LEX (REST API)
+# ============================================
+def buscar_eurlex(palabra, fecha_inicio, fecha_fin):
+    """
+    Búsqueda en EUR-Lex usando el servicio de búsqueda REST
+    Alternativa al SPARQL que es más estable
+    """
+    resultados = []
+    
+    # Traducción simple al inglés para EUR-Lex
+    traducciones = {
+        "agua": "water", "residuos": "waste", "aire": "air",
+        "suelo": "soil", "ruido": "noise", "radiactividad": "radioactivity",
+        "vertido": "discharge", "depuración": "treatment", "reciclaje": "recycling",
+        "emisión": "emission", "contaminación": "pollution"
+    }
+    
+    term_en = traducciones.get(palabra.lower(), palabra.lower())
+    
+    # URL de búsqueda de EUR-Lex (formato JSON)
+    url = "https://eur-lex.europa.eu/search.html"
+    
+    params = {
+        'q': term_en,
+        'type': 'advanced',
+        'lang': 'es',
+        'page': 1,
+        'pageSize': 15,
+        'date-ds': fecha_inicio.strftime("%Y-%m-%d"),
+        'date-de': fecha_fin.strftime("%Y-%m-%d"),
+        'format': 'json'
+    }
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json'
+    }
+    
+    try:
+        response = requests.get(url, params=params, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            # Intentar parsear JSON
+            try:
+                data = response.json()
+                results = data.get('results', {}).get('result', [])
+                
+                for item in results:
+                    titulo = item.get('title', 'Sin título')
+                    celex = item.get('celex', '')
+                    fecha = item.get('date_document', '')[:10]
+                    tipo = item.get('resource_type', 'Acto legal')
+                    
+                    if celex:
+                        enlace = f"https://eur-lex.europa.eu/legal-content/ES/TXT/?uri=CELEX:{celex}"
+                    else:
+                        enlace = item.get('url', '')
+                    
+                    resultados.append({
+                        "Título": titulo[:200],
+                        "Fuente": "EUR-Lex",
+                        "Fecha": fecha,
+                        "Estado": "✅ Consultar en EUR-Lex",
+                        "Enlace": enlace,
+                        "Tipo": tipo
+                    })
+            except json.JSONDecodeError:
+                # Si no devuelve JSON, mostrar advertencia
+                st.warning("EUR-Lex no devolvió JSON, puede estar sobrecargado")
+        else:
+            st.warning(f"EUR-Lex respondió con código {response.status_code}")
+            
+    except Exception as e:
+        st.warning(f"EUR-Lex: {str(e)[:80]}")
+    
+    return resultados
+
+# ============================================
+# INTERFAZ DE USUARIO
+# ============================================
+st.sidebar.header("🔍 Configuración de búsqueda")
+
+# Selector de categoría
+categoria = st.sidebar.selectbox("Categoría ambiental", list(CATEGORIAS.keys()))
+
+# Palabras clave específicas
+palabras_disponibles = CATEGORIAS[categoria]
+palabra_seleccionada = st.sidebar.selectbox("Palabra clave específica", palabras_disponibles + ["🔎 Personalizar"])
+
+if palabra_seleccionada == "🔎 Personalizar":
+    keyword = st.sidebar.text_input("Escribe tu palabra clave", placeholder="Ej: atmósfera, vertido, acústica...")
+else:
+    keyword = palabra_seleccionada
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🌍 Niveles a consultar")
+buscar_ue = st.sidebar.checkbox("🇪🇺 Unión Europea (EUR-Lex)", value=True)
+buscar_es = st.sidebar.checkbox("🇪🇸 España (BOE)", value=True)
+buscar_can = st.sidebar.checkbox("🇮🇨 Canarias (BOC)", value=True)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📅 Rango temporal")
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    fecha_desde = st.date_input("Desde", datetime(1990, 1, 1))
+with col2:
+    fecha_hasta = st.date_input("Hasta", datetime.now())
+
+st.sidebar.markdown("---")
+boton_buscar = st.sidebar.button("🔍 BUSCAR LEGISLACIÓN", type="primary", use_container_width=True)
+
+# ============================================
+# EJECUCIÓN DE LA BÚSQUEDA
+# ============================================
+if boton_buscar and keyword:
+    st.header(f"📋 Resultados para: '{keyword}'")
+    st.caption(f"Período: {fecha_desde.strftime('%d/%m/%Y')} - {fecha_hasta.strftime('%d/%m/%Y')}")
+    
+    resultados_totales = []
+    
+    # Barra de progreso
     progress_bar = st.progress(0)
+    status_text = st.empty()
     
+    # Búsqueda en EUR-Lex
     if buscar_ue:
-        progress_text.text("🇪🇺 Consultando EUR-Lex...")
-        resultados_ue = buscar_eurlex_sparql(keyword, fecha_desde, fecha_hasta)
-        resultados.extend(resultados_ue)
-        progress_bar.progress(50)
+        status_text.text("🇪🇺 Buscando en EUR-Lex...")
+        resultados_ue = buscar_eurlex(keyword, fecha_desde, fecha_hasta)
+        resultados_totales.extend(resultados_ue)
+        progress_bar.progress(33)
     
+    # Búsqueda en BOE
     if buscar_es:
-        progress_text.text("🇪🇸 Consultando BOE...")
+        status_text.text("🇪🇸 Buscando en BOE...")
         resultados_es = buscar_boe(keyword, fecha_desde, fecha_hasta)
-        resultados.extend(resultados_es)
+        resultados_totales.extend(resultados_es)
+        progress_bar.progress(66)
+    
+    # Búsqueda en BOC
+    if buscar_can:
+        status_text.text("🇮🇨 Buscando en BOC...")
+        resultados_can = buscar_boc(keyword, fecha_desde, fecha_hasta)
+        resultados_totales.extend(resultados_can)
         progress_bar.progress(100)
     
-    progress_text.empty()
+    status_text.empty()
     progress_bar.empty()
     
-    if resultados:
-        st.success(f"🔍 {len(resultados)} resultados encontrados")
-        df = pd.DataFrame(resultados)
-        st.dataframe(df[["Título", "Nivel", "Fecha", "Estado"]], use_container_width=True)
+    # MOSTRAR RESULTADOS
+    if resultados_totales:
+        st.success(f"✅ {len(resultados_totales)} resultados encontrados")
         
+        # Métricas
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("📄 Total", len(resultados_totales))
+        col2.metric("🇪🇺 UE", len([r for r in resultados_totales if r["Fuente"] == "EUR-Lex"]))
+        col3.metric("🇪🇸 BOE", len([r for r in resultados_totales if r["Fuente"] == "BOE"]))
+        col4.metric("🇮🇨 BOC", len([r for r in resultados_totales if r["Fuente"] == "BOC"]))
+        
+        # Convertir a DataFrame
+        df = pd.DataFrame(resultados_totales)
+        
+        # Mostrar tabla
+        st.dataframe(
+            df[["Título", "Fuente", "Fecha", "Estado"]],
+            use_container_width=True,
+            column_config={
+                "Título": st.column_config.TextColumn("Título de la norma", width="large"),
+                "Fuente": st.column_config.TextColumn("Origen", width="small"),
+                "Fecha": st.column_config.TextColumn("Fecha publicación", width="small"),
+                "Estado": st.column_config.TextColumn("Estado", width="small")
+            }
+        )
+        
+        # Expandir con enlaces
+        with st.expander("🔗 Ver enlaces directos a las normas"):
+            for i, row in df.iterrows():
+                st.markdown(f"**{row['Título'][:100]}** ({row['Fuente']})")
+                st.markdown(f"📅 {row['Fecha']} | {row['Estado']}")
+                st.markdown(f"[🔗 Abrir norma]({row['Enlace']})")
+                if 'Tipo' in row and row['Tipo']:
+                    st.caption(f"Tipo: {row['Tipo']}")
+                st.markdown("---")
+        
+        # Botón de descarga CSV
         csv = df.to_csv(index=False).encode('utf-8-sig')
-        st.download_button("📥 Descargar CSV", csv, f"legislacion_{keyword}.csv", "text/csv")
+        st.download_button(
+            label="📥 DESCARGAR RESULTADOS (CSV)",
+            data=csv,
+            file_name=f"legislacion_ambiental_{keyword}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+        
     else:
-        st.warning("No se encontraron resultados")
-    
-    # Botón para nueva búsqueda
-    if st.button("🔄 Nueva búsqueda"):
-        st.session_state.busqueda_realizada = False
-        st.rerun()
+        st.warning(f"⚠️ No se encontraron resultados para '{keyword}' en el período seleccionado.")
+        st.info("💡 **Sugerencias:** Prueba con otra palabra clave, amplía el rango de fechas o selecciona más niveles.")
+
+elif boton_buscar and not keyword:
+    st.warning("⚠️ Por favor, selecciona o escribe una palabra clave para buscar.")
 
 else:
-    st.info("👈 Selecciona categoría y haz clic en BUSCAR")
+    # Pantalla de bienvenida
+    st.info("👈 **Configura tu búsqueda en la barra lateral y haz clic en 'BUSCAR LEGISLACIÓN'**")
     
-    with st.expander("ℹ️ Sobre la búsqueda"):
+    # Información sobre el buscador
+    with st.expander("ℹ️ Cómo funciona este buscador"):
         st.markdown("""
-        **EUR-Lex SPARQL:** Consulta directa al endpoint oficial de la UE
-        - Rango: 1990 - actualidad
-        - Búsqueda por título en español/inglés
+        ### 🔍 Fuentes de datos en tiempo real
         
-        **BOE:** API oficial del Boletín Oficial del Estado
+        | Nivel | Fuente | Método | Cobertura |
+        |-------|--------|--------|-----------|
+        | 🇪🇺 **Unión Europea** | EUR-Lex | API REST | 1990 - actualidad |
+        | 🇪🇸 **España** | BOE | API oficial | 1990 - actualidad |
+        | 🇮🇨 **Canarias** | BOC | Scraping XML | 2000 - actualidad |
+        
+        ### 📌 Palabras clave por categoría
+        
+        - **Agua:** agua, vertido, depuración, acuífero, desalación, trasvase
+        - **Residuos:** residuo, reciclaje, vertedero, economía circular, envases
+        - **Aire:** aire, emisión, calidad del aire, ozono, CO2
+        - **Suelo:** suelo, contaminación del suelo, restauración
+        - **Ruido:** ruido, acústica, vibración
+        - **Radiactividad:** radiactivo, nuclear, radiación
+        
+        ### 📊 Estado de las normas
+        
+        | Color | Significado |
+        |-------|-------------|
+        | ✅ Vigente | Norma activa y en vigor |
+        | 📝 Modificada/Refundida | Existe versión posterior |
+        | ❌ Derogada | Norma sin vigencia |
         """)
 
-st.caption(f"Última carga: {datetime.now().strftime('%H:%M:%S')}")
+st.markdown("---")
+st.caption(f"🔍 Búsqueda en tiempo real - Última carga: {datetime.now().strftime('%H:%M:%S')}")
