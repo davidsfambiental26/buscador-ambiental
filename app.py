@@ -2,40 +2,35 @@ import streamlit as st
 import pandas as pd
 import requests
 from datetime import date
-from bs4 import BeautifulSoup
+import xml.etree.ElementTree as ET
 
 st.set_page_config(page_title="Monitor Ambiental Legal", layout="wide")
 
 MATERIAS_SGA = {
-    "Residuos": "waste",
-    "Emisiones Atmosféricas": "air",
-    "Vertidos y Aguas": "water",
-    "Suelos Contaminados": "soil",
-    "Evaluación de Impacto Ambiental": "impact",
-    "Cambio Climático y Energía": "climate",
-    "Ruidos y Vibraciones": "noise",
-    "Sustancias Químicas (REACH/CLP)": "chemical",
-    "Responsabilidad Medioambiental": "liability",
-    "Envases y Embalajes": "packaging",
-    "Eficiencia Energética": "energy",
-    "Biodiversidad y Espacios Protegidos": "biodiversity"
+    "Residuos": "residuos",
+    "Emisiones Atmosféricas": "emisiones",
+    "Vertidos y Aguas": "vertidos",
+    "Suelos Contaminados": "suelos",
+    "Evaluación de Impacto Ambiental": "impacto ambiental",
+    "Cambio Climático y Energía": "cambio climático",
+    "Ruidos y Vibraciones": "ruido",
+    "Sustancias Químicas (REACH/CLP)": "químicas",
+    "Responsabilidad Medioambiental": "responsabilidad",
+    "Envases y Embalajes": "envases",
+    "Eficiencia Energética": "eficiencia energética",
+    "Biodiversidad y Espacios Protegidos": "biodiversidad"
 }
 
-# ---------------- EUR-LEX (REST API) ----------------
+# ---------------- EUR-LEX API ----------------
 def buscar_eurlex(termino, f_ini, f_fin):
-    url = "https://eur-lex.europa.eu/EURLexWebService"
-    params = {
-        "WS": "search",
-        "lang": "es",
-        "type": "legislation",
-        "keyword": termino,
-        "dateFrom": f_ini,
-        "dateTo": f_fin,
-        "page": 1
-    }
+    url = (
+        "https://eur-lex.europa.eu/api/search?"
+        f"lang=es&query=title={termino}&page=1&pageSize=50"
+        f"&dateFrom={f_ini}&dateTo={f_fin}"
+    )
 
     try:
-        r = requests.get(url, params=params, timeout=20)
+        r = requests.get(url, timeout=20)
         data = r.json()
 
         resultados = []
@@ -48,33 +43,21 @@ def buscar_eurlex(termino, f_ini, f_fin):
 
         return resultados
 
-    except Exception as e:
-        st.error(f"Error EUR-Lex: {e}")
+    except:
         return []
 
-# ---------------- BOE ----------------
-def buscar_boe(termino, f_ini, f_fin):
-    url = f"https://www.boe.es/buscar/boe.php?campo=tit&dato={termino}&fmin={f_ini.year}&fmax={f_fin.year}"
-
-    headers = {"User-Agent": "Mozilla/5.0"}
-    r = requests.get(url, headers=headers, timeout=20)
-
-    soup = BeautifulSoup(r.text, "html.parser")
-    bloques = soup.select("div.resultado")
+# ---------------- BOE API XML ----------------
+def buscar_boe(termino):
+    url = f"https://www.boe.es/buscar/legislacion.php?campo=tit&texto={termino}&format=xml"
+    r = requests.get(url, timeout=20)
 
     resultados = []
-    for b in bloques:
-        a = b.find("a")
-        if not a:
-            continue
+    root = ET.fromstring(r.text)
 
-        titulo = a.text.strip()
-        enlace = "https://www.boe.es" + a["href"]
-
-        fecha = ""
-        f = b.find("span", class_="fecha")
-        if f:
-            fecha = f.text.strip()
+    for item in root.findall(".//item"):
+        titulo = item.findtext("titulo", "")
+        fecha = item.findtext("fecha_disposicion", "")
+        enlace = item.findtext("url_pdf", "")
 
         resultados.append({
             "Fecha": fecha,
@@ -84,29 +67,21 @@ def buscar_boe(termino, f_ini, f_fin):
 
     return resultados
 
-# ---------------- BOC ----------------
+# ---------------- BOC API XML ----------------
 def buscar_boc(termino):
-    url = f"https://www.gobiernodecanarias.org/boc/buscar.jsp?tipo=1&texto={termino}"
-    headers = {"User-Agent": "Mozilla/5.0"}
-
-    r = requests.get(url, headers=headers, timeout=20)
-    soup = BeautifulSoup(r.text, "html.parser")
+    url = f"https://www.gobiernodecanarias.org/boc/buscar.jsp?tipo=1&texto={termino}&format=xml"
+    r = requests.get(url, timeout=20)
 
     resultados = []
-    filas = soup.select("div.resultado-busqueda")
+    root = ET.fromstring(r.text)
 
-    for fila in filas:
-        a = fila.find("a")
-        if not a:
-            continue
-
-        titulo = a.text.strip()
-        enlace = a["href"]
-        if enlace.startswith("/"):
-            enlace = "https://www.gobiernodecanarias.org" + enlace
+    for item in root.findall(".//item"):
+        titulo = item.findtext("titulo", "")
+        fecha = item.findtext("fecha", "")
+        enlace = item.findtext("url", "")
 
         resultados.append({
-            "Fecha": "",
+            "Fecha": fecha,
             "Normativa": titulo,
             "Enlace": enlace
         })
@@ -124,6 +99,7 @@ with st.sidebar:
     ejecutar = st.button("Buscar legislación")
 
 if ejecutar:
+
     # EUR-Lex
     st.subheader("🇪🇺 Legislación Europea")
     eu = buscar_eurlex(termino, f_ini.isoformat(), f_fin.isoformat())
@@ -131,7 +107,7 @@ if ejecutar:
 
     # BOE
     st.subheader("🇪🇸 Legislación Estatal (BOE)")
-    boe = buscar_boe(termino, f_ini, f_fin)
+    boe = buscar_boe(termino)
     st.dataframe(pd.DataFrame(boe)) if boe else st.warning("Sin resultados")
 
     # BOC
