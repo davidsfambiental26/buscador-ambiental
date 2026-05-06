@@ -4,7 +4,7 @@ import requests
 from datetime import date
 
 # Configuración de la página
-st.set_page_config(page_title="Vigilancia Normativa SGA", layout="wide")
+st.set_page_config(page_title="Monitor Ambiental Legal", layout="wide")
 
 # --- LISTADO DESPLEGABLE (MANTENIDO INTACTO) ---
 MATERIAS_SGA = {
@@ -22,13 +22,10 @@ MATERIAS_SGA = {
     "Biodiversidad y Espacios Protegidos": "biodiversidad"
 }
 
-# --- FUNCIÓN DE CONSULTA EUROPEA ---
-def buscar_eurlex(termino, fecha_inicio, fecha_fin):
+# --- FUNCIÓN DE CONSULTA EUROPA (SPARQL) ---
+def buscar_eurlex(termino, f_inicio, f_fin):
     endpoint = "https://publications.europa.eu/webapi/rdf/sparql"
-    # Convertimos fechas a string para la consulta SPARQL
-    f_ini = fecha_inicio.strftime("%Y-%m-%d")
-    f_fin = fecha_fin.strftime("%Y-%m-%d")
-    
+    # Formateo de fechas para SPARQL
     query = f"""
     PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
     SELECT DISTINCT ?celex ?title ?date WHERE {{
@@ -38,77 +35,82 @@ def buscar_eurlex(termino, fecha_inicio, fecha_fin):
       ?title_res cdm:title_has_content ?title .
       FILTER(lang(?title) = "es")
       FILTER(CONTAINS(LCASE(?title), "{termino.lower()}"))
-      FILTER(?date >= "{f_ini}"^^<http://www.w3.org/2001/XMLSchema#date>)
+      FILTER(?date >= "{f_inicio}"^^<http://www.w3.org/2001/XMLSchema#date>)
       FILTER(?date <= "{f_fin}"^^<http://www.w3.org/2001/XMLSchema#date>)
-    }} ORDER BY DESC(?date) LIMIT 50
+    }} ORDER BY DESC(?date) LIMIT 25
     """
     try:
-        r = requests.get(endpoint, params={'query': query}, headers={'Accept': 'application/sparql-results+json'}, timeout=12)
+        r = requests.get(endpoint, params={'query': query}, headers={'Accept': 'application/sparql-results+json'}, timeout=15)
         if r.status_code == 200:
             res = r.json()['results']['bindings']
-            return [{"Fecha": b['date']['value'], "Título": b['title']['value'], "Enlace": f"https://eur-lex.europa.eu/legal-content/ES/TXT/?uri=CELEX:{b['celex']['value']}"} for b in res]
-    except: return []
+            return [{"Fecha": b['date']['value'], "Normativa": b['title']['value'], "Enlace": f"https://eur-lex.europa.eu/legal-content/ES/TXT/?uri=CELEX:{b['celex']['value']}"} for b in res]
+    except:
+        return []
     return []
 
 # --- INTERFAZ ---
-st.title("⚖️ Buscador Legislativo Ambiental")
-st.subheader("Estudio de SGA - Vigilancia de Requisitos Legales")
+st.title("⚖️ Buscador Legislativo de Materias Ambientales")
 
 with st.sidebar:
-    st.header("Parámetros de Auditoría")
-    
-    # Calendarios para selección de fecha exacta
-    fecha_inicio = st.date_input("Fecha Inicial:", value=date(1990, 1, 1), min_value=date(1990, 1, 1))
-    fecha_final = st.date_input("Fecha Final:", value=date.today())
+    st.header("Filtros Temporales")
+    f_ini = st.date_input("Fecha Inicial:", value=date(1990, 1, 1), min_value=date(1990, 1, 1))
+    f_fin = st.date_input("Fecha Final:", value=date.today())
     
     st.divider()
-    
-    # Selector de materia (Intacto)
+    # Desplegable intacto
     seleccion = st.selectbox("Aspecto Ambiental:", list(MATERIAS_SGA.keys()))
     termino = MATERIAS_SGA[seleccion]
     
-    st.divider()
-    ejecutar = st.button("🔍 Ejecutar Vigilancia")
+    ejecutar = st.button("🔍 Obtener Listados")
 
 if ejecutar:
-    # Validación de fechas
-    if fecha_inicio > fecha_final:
-        st.error("Error: La fecha inicial no puede ser posterior a la fecha final.")
-    else:
-        # 1. NIVEL EUROPEO (TABLA REAL)
-        st.subheader(f"🇪🇺 Normativa Europea: {seleccion}")
-        lista_eu = buscar_eurlex(termino, fecha_inicio, fecha_final)
-        
-        if lista_eu:
-            df_eu = pd.DataFrame(lista_eu)
+    # 1. NIVEL EUROPEO
+    st.subheader(f"🇪🇺 Listado de Directivas y Reglamentos Europeos ({seleccion})")
+    with st.spinner("Consultando repositorio de la Unión Europea..."):
+        listado_eu = buscar_eurlex(termino, f_ini, f_fin)
+        if listado_eu:
+            df_eu = pd.DataFrame(listado_eu)
             st.dataframe(
                 df_eu, 
-                column_config={"Enlace": st.column_config.LinkColumn("Texto Íntegro")}, 
+                column_config={"Enlace": st.column_config.LinkColumn("Abrir Norma")},
                 hide_index=True, 
                 use_container_width=True
             )
         else:
-            st.info("No se encontraron resultados en el repositorio europeo para estas fechas.")
+            st.warning("EUR-Lex no devolvió resultados para este término en el rango elegido. Pruebe a ampliar el término.")
 
-        # 2. NIVEL NACIONAL Y CANARIO (TABLA DE ACCESO)
-        st.subheader("🇪🇸 Ámbito Nacional y Autonómico")
-        
-        # Enlaces parametrizados con las fechas seleccionadas
-        url_boe = f"https://www.boe.es/buscar/boe.php?campo=tit&dato={termino}&operador=AND&punto_leg=on&fmin={fecha_inicio.year}&fmax={fecha_final.year}"
-        url_boc = f"http://www.gobiernodecanarias.org/juridico/boc/buscar.jsp?busqueda={termino}"
-        
-        data_locales = [
-            {"Nivel": "España (BOE)", "Detalle": f"Legislación consolidada (Rango anual {fecha_inicio.year}-{fecha_final.year})", "Acceso": url_boe},
-            {"Nivel": "Canarias (BOC)", "Detalle": f"Buscador jurídico - Materia: {seleccion}", "Acceso": url_boc}
-        ]
-        
-        st.dataframe(
-            pd.DataFrame(data_locales), 
-            column_config={"Acceso": st.column_config.LinkColumn("Abrir Resultados")}, 
-            hide_index=True, 
-            use_container_width=True
-        )
+    # 2. NIVEL NACIONAL Y CANARIO (ENLACES DE EJECUCIÓN DIRECTA)
+    st.subheader("🇪🇸 Ámbito Nacional e Insular")
+    st.info("Debido a restricciones de seguridad de los servidores del BOE y BOC, use los siguientes accesos directos para generar el listado oficial en tiempo real:")
+    
+    # Construcción de URLs de búsqueda funcional para BOE y BOC
+    # BOE: Filtro por título, legislación y rango de fechas
+    url_boe = f"https://www.boe.es/buscar/boe.php?campo=tit&dato={termino}&operador=AND&punto_leg=on&fmin={f_ini.year}&fmax={f_fin.year}"
+    
+    # BOC: Buscador jurídico oficial del Gobierno de Canarias
+    url_boc = f"http://www.gobiernodecanarias.org/juridico/boc/buscar.jsp?busqueda={termino}"
 
-# --- PIE DE PÁGINA SEGURO ---
+    # Tabla de listados nacionales
+    data_nacional = [
+        {
+            "Nivel": "ESTATAL (BOE)", 
+            "Descripción": f"Listado completo de Leyes y Reales Decretos sobre {seleccion}", 
+            "Acceso": url_boe
+        },
+        {
+            "Nivel": "CANARIAS (BOC)", 
+            "Descripción": f"Listado de Decretos y Órdenes de la C.A. Canaria sobre {seleccion}", 
+            "Acceso": url_boc
+        }
+    ]
+    
+    df_nacional = pd.DataFrame(data_nacional)
+    st.dataframe(
+        df_nacional,
+        column_config={"Acceso": st.column_config.LinkColumn("Generar Listado en Diario Oficial")},
+        hide_index=True,
+        use_container_width=True
+    )
+
 st.divider()
-st.caption(f"Consulta generada el {date.today().strftime('%d/%m/%Y')} | Fuente: EUR-Lex (Cellar), BOE y BOC.")
+st.caption("Nota profesional: Los enlaces estatales y autonómicos abren el listado oficial actualizado en el portal del legislador.")
