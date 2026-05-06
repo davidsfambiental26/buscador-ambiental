@@ -1,158 +1,143 @@
 import streamlit as st
 import pandas as pd
-import requests
 from datetime import date
 
-# ---------------------------------------------------------
-# CONFIGURACIÓN BÁSICA
-# ---------------------------------------------------------
-st.set_page_config(page_title="Monitor Ambiental Legal (SGA)", layout="wide")
+st.set_page_config(page_title="Buscador local de legislación SGA", layout="wide")
 
-MATERIAS_SGA = {
-    "Residuos": "residuos",
-    "Emisiones Atmosféricas": "emisiones atmósfera",
-    "Vertidos y Aguas": "vertidos aguas",
-    "Suelos Contaminados": "suelos contaminados",
-    "Evaluación de Impacto Ambiental": "impacto ambiental",
-    "Cambio Climático y Energía": "cambio climático",
-    "Ruidos y Vibraciones": "ruido",
-    "Sustancias Químicas (REACH/CLP)": "sustancias químicas",
-    "Responsabilidad Medioambiental": "responsabilidad medioambiental",
-    "Envases y Embalajes": "envases",
-    "Eficiencia Energética": "eficiencia energética",
-    "Biodiversidad y Espacios Protegidos": "biodiversidad"
-}
+# ---------------- CONFIGURACIÓN ----------------
+ASPECTOS_SGA = [
+    "Residuos",
+    "Emisiones Atmosféricas",
+    "Vertidos y Aguas",
+    "Suelos Contaminados",
+    "Evaluación de Impacto Ambiental",
+    "Cambio Climático y Energía",
+    "Ruidos y Vibraciones",
+    "Sustancias Químicas (REACH/CLP)",
+    "Responsabilidad Medioambiental",
+    "Envases y Embalajes",
+    "Eficiencia Energética",
+    "Biodiversidad y Espacios Protegidos",
+]
 
-# ---------------------------------------------------------
-# FUNCIÓN EUR-LEX (SPARQL)
-# ---------------------------------------------------------
-def buscar_eurlex(termino: str, f_inicio: date, f_fin: date):
-    endpoint = "https://publications.europa.eu/webapi/rdf/sparql"
+NIVELES = ["UE", "ES", "CAN"]
 
-    f_ini_str = f_inicio.isoformat()
-    f_fin_str = f_fin.isoformat()
+# ---------------- CARGA DEL EXCEL ----------------
+@st.cache_data
+def cargar_legislacion(ruta_excel: str):
+    # Lee las tres hojas y añade columna Nivel si no existe
+    xls = pd.read_excel(ruta_excel, sheet_name=None)
 
-    query = f"""
-    PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
-    SELECT DISTINCT ?celex ?title ?date WHERE {{
-      ?work cdm:resource_legal_id_celex ?celex .
-      ?work cdm:work_date_document ?date .
-      ?work cdm:work_has_title ?title_res .
-      ?title_res cdm:title_has_content ?title .
-      FILTER(CONTAINS(LCASE(?title), "{termino.lower()}"))
-      FILTER(?date >= "{f_ini_str}"^^<http://www.w3.org/2001/XMLSchema#date>)
-      FILTER(?date <= "{f_fin_str}"^^<http://www.w3.org/2001/XMLSchema#date>)
-    }} ORDER BY DESC(?date) LIMIT 50
-    """
+    dfs = []
 
-    try:
-        r = requests.get(
-            endpoint,
-            params={"query": query},
-            headers={"Accept": "application/sparql-results+json"},
-            timeout=20,
-        )
-        if r.status_code != 200:
-            return []
+    for nombre_hoja, nivel in [("EU", "UE"), ("ES", "ES"), ("CAN", "CAN")]:
+        if nombre_hoja not in xls:
+            continue
+        df = xls[nombre_hoja].copy()
 
-        data = r.json()
-        bindings = data.get("results", {}).get("bindings", [])
+        # Normalizamos nombres de columnas
+        df.columns = [c.strip() for c in df.columns]
 
-        resultados = []
-        for b in bindings:
-            fecha = b.get("date", {}).get("value", "")
-            titulo = b.get("title", {}).get("value", "")
-            celex = b.get("celex", {}).get("value", "")
-            enlace = f"https://eur-lex.europa.eu/legal-content/ES/TXT/?uri=CELEX:{celex}"
+        # Aseguramos columnas mínimas
+        for col in ["Nivel", "Aspecto", "Fecha", "Título", "Enlace"]:
+            if col not in df.columns:
+                df[col] = ""
 
-            resultados.append(
-                {"Fecha": fecha, "Normativa": titulo, "Enlace": enlace}
-            )
+        # Si no hay Nivel en la hoja, lo fijamos
+        df["Nivel"] = df["Nivel"].replace("", nivel)
 
-        return resultados
+        # Convertimos Fecha a datetime
+        df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
 
-    except Exception:
-        return []
+        dfs.append(df)
 
-# ---------------------------------------------------------
-# INTERFAZ STREAMLIT
-# ---------------------------------------------------------
-st.title("⚖️ Buscador Legislativo Ambiental para SGA")
+    if not dfs:
+        return pd.DataFrame(columns=["Nivel", "Aspecto", "Fecha", "Título", "Enlace"])
 
+    return pd.concat(dfs, ignore_index=True)
+
+
+st.title("⚖️ Buscador local de legislación ambiental (SGA)")
+
+ruta_excel = st.text_input(
+    "Ruta del archivo Excel con la legislación (legislacion_sga.xlsx):",
+    value="legislacion_sga.xlsx",
+)
+
+if not ruta_excel:
+    st.stop()
+
+try:
+    df_all = cargar_legislacion(ruta_excel)
+except Exception as e:
+    st.error(f"No se pudo leer el archivo: {e}")
+    st.stop()
+
+if df_all.empty:
+    st.warning("El archivo se ha cargado pero no contiene datos o no se han encontrado las hojas EU/ES/CAN.")
+    st.stop()
+
+# ---------------- FILTROS ----------------
 with st.sidebar:
-    st.header("Filtros temporales")
-    f_ini = st.date_input("Fecha inicial", value=date(1990, 1, 1))
-    f_fin = st.date_input("Fecha final", value=date.today())
+    st.header("Filtros de búsqueda")
 
-    st.divider()
-    seleccion = st.selectbox("Aspecto ambiental", list(MATERIAS_SGA.keys()))
-    termino = MATERIAS_SGA[seleccion]
+    nivel_sel = st.multiselect("Nivel", NIVELES, default=NIVELES)
 
-    ejecutar = st.button("🔍 Buscar legislación")
+    aspecto_sel = st.multiselect("Aspecto ambiental (SGA)", ASPECTOS_SGA, default=ASPECTOS_SGA)
 
-if ejecutar:
+    # Rango temporal
+    min_fecha = df_all["Fecha"].min()
+    max_fecha = df_all["Fecha"].max()
 
-    # ---------------- EUR-LEX ----------------
-    st.subheader(f"🇪🇺 Legislación europea (EUR-Lex) sobre {seleccion}")
-    with st.spinner("Consultando EUR-Lex..."):
-        eu = buscar_eurlex(termino, f_ini, f_fin)
-
-    if eu:
-        df_eu = pd.DataFrame(eu)
-        st.dataframe(
-            df_eu,
-            column_config={"Enlace": st.column_config.LinkColumn("Abrir norma")},
-            hide_index=True,
-            use_container_width=True
-        )
+    if pd.isna(min_fecha) or pd.isna(max_fecha):
+        f_ini = st.date_input("Fecha inicial", value=date(1990, 1, 1))
+        f_fin = st.date_input("Fecha final", value=date.today())
     else:
-        st.warning("EUR-Lex no devolvió resultados para este término en el rango elegido.")
+        f_ini = st.date_input("Fecha inicial", value=min_fecha.date())
+        f_fin = st.date_input("Fecha final", value=max_fecha.date())
 
-    # ---------------- BOE ----------------
-    st.subheader(f"🇪🇸 Legislación estatal (BOE) sobre {seleccion}")
-    st.info("El BOE no permite extracción automática estable. Se proporciona acceso directo al buscador oficial.")
+    texto_libre = st.text_input("Búsqueda en título (opcional):", value="")
 
-    url_boe = (
-        "https://www.boe.es/buscar/boe.php?"
-        f"campo=tit&dato={termino}&operador=AND&punto_leg=on"
-        f"&fmin={f_ini.year}&fmax={f_fin.year}"
-    )
+# ---------------- APLICAR FILTROS ----------------
+df_filtrado = df_all.copy()
 
-    df_boe = pd.DataFrame([
-        {
-            "Nivel": "ESTATAL (BOE)",
-            "Descripción": f"Leyes y Reales Decretos sobre {seleccion}",
-            "Acceso": url_boe
-        }
-    ])
+df_filtrado = df_filtrado[df_filtrado["Nivel"].isin(nivel_sel)]
+df_filtrado = df_filtrado[df_filtrado["Aspecto"].isin(aspecto_sel)]
 
+df_filtrado = df_filtrado[
+    (df_filtrado["Fecha"] >= pd.to_datetime(f_ini)) &
+    (df_filtrado["Fecha"] <= pd.to_datetime(f_fin))
+]
+
+if texto_libre:
+    df_filtrado = df_filtrado[
+        df_filtrado["Título"].str.contains(texto_libre, case=False, na=False)
+    ]
+
+# ---------------- RESULTADOS ----------------
+st.subheader("Resultados filtrados")
+
+if df_filtrado.empty:
+    st.warning("No hay resultados con los filtros seleccionados.")
+else:
+    # Orden por fecha descendente
+    df_filtrado = df_filtrado.sort_values("Fecha", ascending=False)
+
+    # Mostrar con enlace clicable
     st.dataframe(
-        df_boe,
-        column_config={"Acceso": st.column_config.LinkColumn("Abrir buscador BOE")},
+        df_filtrado[["Nivel", "Aspecto", "Fecha", "Título", "Enlace"]],
+        column_config={
+            "Enlace": st.column_config.LinkColumn("Abrir norma"),
+        },
         hide_index=True,
-        use_container_width=True
+        use_container_width=True,
     )
 
-    # ---------------- BOC ----------------
-    st.subheader(f"🏝️ Legislación autonómica canaria (BOC) sobre {seleccion}")
-    st.info("El BOC no ofrece API estable. Se proporciona acceso directo al buscador oficial.")
-
-    url_boc = f"https://www.gobiernodecanarias.org/juridico/boc/buscar.jsp?texto={termino}"
-
-    df_boc = pd.DataFrame([
-        {
-            "Nivel": "CANARIAS (BOC)",
-            "Descripción": f"Decretos y Órdenes de Canarias sobre {seleccion}",
-            "Acceso": url_boc
-        }
-    ])
-
-    st.dataframe(
-        df_boc,
-        column_config={"Acceso": st.column_config.LinkColumn("Abrir buscador BOC")},
-        hide_index=True,
-        use_container_width=True
+    # Opción de descarga
+    csv = df_filtrado.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "📥 Descargar resultados filtrados (CSV)",
+        data=csv,
+        file_name="legislacion_filtrada_sga.csv",
+        mime="text/csv",
     )
-
-st.divider()
-st.caption("Verifique siempre la vigencia y el texto consolidado en el diario oficial correspondiente.")
